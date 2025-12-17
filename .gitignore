@@ -48,7 +48,7 @@ HAM10000_images_part_2/
 HAM10000_metadata.csv
 
 # Models (trained artifacts)
-models/
+# models/
 
 # Logs
 logs/
