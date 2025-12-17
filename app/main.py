@@ -72,6 +72,7 @@ def _predict_from_features(features: np.ndarray) -> Dict[str, Any]:
     confidence: Optional[float] = None
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(features_scaled)
+        proba = np.asarray(proba)
         confidence = float(np.max(proba[0])) if proba.size else None
 
     # Safety net: flag low-confidence predictions
