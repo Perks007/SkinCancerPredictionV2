@@ -209,4 +209,4 @@ DISCORD_WEBHOOK_URL = "your-webhook-url-here"
 
 ---
 
-**Made with ❤️ for automated ML quality assurance**
+**Made with ❤️ for ML Project. Dr sandhu you are Champion**
