@@ -7,11 +7,12 @@ import logging
 import logging.handlers
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import cv2
 import joblib
 import numpy as np
+import pandas as pd
 from skimage.feature import graycomatrix, graycoprops
 
 PathOrArray = Union[str, os.PathLike, np.ndarray]
@@ -77,11 +78,12 @@ def log_experiment_result(
         "Accuracy": metrics.get("accuracy", 0.0),
         "F1_Score": metrics.get("f1_score", 0.0),
         "Recall_Melanoma": metrics.get("recall_melanoma", 0.0),
+        "RMSE": metrics.get("rmse", 0.0),
     }
     
     # Write to CSV
     with open(report_path, "a", newline="", encoding="utf-8") as csvfile:
-        fieldnames = ["Timestamp", "Model_Name", "Parameters", "Accuracy", "F1_Score", "Recall_Melanoma"]
+        fieldnames = ["Timestamp", "Model_Name", "Parameters", "Accuracy", "F1_Score", "Recall_Melanoma", "RMSE"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
         # Write header if file is new
@@ -100,17 +102,57 @@ def load_artifacts(models_dir: str = "models") -> Dict[str, Any]:
     scaler_path = os.path.join(models_dir, "scaler.pkl")
     encoder_path = os.path.join(models_dir, "label_encoder.pkl")
     metadata_path = os.path.join(models_dir, "model_metadata.pkl")
+    age_regressor_path = os.path.join(models_dir, "age_regressor.pkl")
 
     return {
         "model": joblib.load(model_path),
         "scaler": joblib.load(scaler_path),
         "encoder": joblib.load(encoder_path),
         "metadata": joblib.load(metadata_path),
+        "age_regressor": joblib.load(age_regressor_path),
     }
 
 
-def extract_advanced_features(image_input: PathOrArray, img_size: tuple[int, int] = (128, 128)) -> Optional[np.ndarray]:
-    """Extract color (HSV) and texture (GLCM) features from an image path or array."""
+def extract_advanced_features(image_input: Union[PathOrArray, pd.DataFrame], img_size: tuple[int, int] = (128, 128)) -> Optional[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]:
+    """Extract color/texture features and optionally return regression targets.
+
+    - If ``image_input`` is a pandas DataFrame (training), it must contain an ``age``
+      column. Missing ages are imputed with the column mean (fallback 50.0) and the
+      function returns ``(X_features, y_reg)``.
+    - If ``image_input`` is a path or ndarray, returns a single feature vector.
+    """
+    if isinstance(image_input, pd.DataFrame):
+        if "age" not in image_input.columns:
+            raise ValueError("DataFrame input must include an 'age' column for regression targets.")
+
+        age_series = image_input["age"]
+        mean_age = float(age_series.dropna().mean()) if not age_series.dropna().empty else 50.0
+        if np.isnan(mean_age):
+            mean_age = 50.0
+
+        # Determine the column that holds image sources
+        image_col = None
+        for candidate in ("image_path", "path", "image", "img"):
+            if candidate in image_input.columns:
+                image_col = candidate
+                break
+
+        if image_col is None:
+            raise ValueError("DataFrame input must include an image column (image_path/path/image/img).")
+
+        features: list[np.ndarray] = []
+        y_reg: list[float] = []
+
+        for _, row in image_input.iterrows():
+            age_value = float(row["age"]) if pd.notna(row["age"]) else mean_age
+            feats = extract_advanced_features(row[image_col], img_size=img_size)
+            if feats is None:
+                continue
+            features.append(feats)
+            y_reg.append(age_value)
+
+        return np.array(features), np.array(y_reg)
+
     if isinstance(image_input, (str, os.PathLike)):
         img = cv2.imread(str(image_input))
     else:
@@ -159,6 +201,14 @@ def extract_advanced_features(image_input: PathOrArray, img_size: tuple[int, int
     return features
 
 
+def save_regressor(model: Any, models_dir: str = "models") -> str:
+    """Persist the regression model used for age prediction."""
+    os.makedirs(models_dir, exist_ok=True)
+    output_path = os.path.join(models_dir, "age_regressor.pkl")
+    joblib.dump(model, output_path)
+    return output_path
+
+
 def preprocess_image(image_bytes: bytes) -> Optional[np.ndarray]:
     """Decode raw image bytes into an OpenCV BGR image."""
     buffer = np.frombuffer(image_bytes, dtype=np.uint8)
@@ -178,6 +228,7 @@ __all__ = [
     "log_experiment_result",
     "load_artifacts",
     "extract_advanced_features",
+    "save_regressor",
     "preprocess_image",
     "extract_features_from_bytes",
 ]

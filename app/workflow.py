@@ -9,15 +9,15 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import classification_report, accuracy_score, f1_score, recall_score
+from sklearn.metrics import classification_report, accuracy_score, f1_score, recall_score, mean_squared_error
 import requests
 from prefect import task, flow
 
-from app.utils import load_artifacts, extract_advanced_features, log_experiment_result
+from app.utils import load_artifacts, extract_advanced_features, log_experiment_result, save_regressor
 from app.ml_validation import validate_training_run
 
 # Define paths
@@ -38,6 +38,7 @@ def task_load_data():
 def task_extract_features(df, limit: int = None):
     X = []
     y = []
+    y_age = []
     
     # Create a mapping of image_id to full path to speed up lookup
     image_paths = {}
@@ -45,6 +46,12 @@ def task_extract_features(df, limit: int = None):
         if p.exists():
             for img_file in p.glob("*.jpg"):
                 image_paths[img_file.stem] = img_file
+
+    mean_age = 50.0
+    if "age" in df.columns:
+        non_null_age = df["age"].dropna()
+        if not non_null_age.empty:
+            mean_age = float(non_null_age.mean())
 
     # Process rows
     count = 0
@@ -54,6 +61,7 @@ def task_extract_features(df, limit: int = None):
             
         img_id = row['image_id']
         label = row['dx']
+        age_value = float(row['age']) if 'age' in row and pd.notna(row['age']) else mean_age
         
         if img_id in image_paths:
             img_path = image_paths[img_id]
@@ -61,9 +69,10 @@ def task_extract_features(df, limit: int = None):
             if features is not None:
                 X.append(features)
                 y.append(label)
+                y_age.append(age_value)
                 count += 1
     
-    return np.array(X), np.array(y)
+    return np.array(X), np.array(y), np.array(y_age)
 
 @task
 def task_train_model(X, y):
@@ -86,6 +95,20 @@ def task_train_model(X, y):
     
     # Return training data as well for validation
     return model, scaler, le, X_train_scaled, X_test_scaled, y_train, y_test
+
+
+@task
+def task_train_age_regressor(X, y_age):
+    X_train, X_test, y_train, y_test = train_test_split(X, y_age, test_size=0.2, random_state=42)
+
+    regressor = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    regressor.fit(X_train, y_train)
+
+    y_pred = regressor.predict(X_test)
+    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+
+    save_regressor(regressor)
+    return regressor, rmse
 
 @task(name="Run DeepChecks Validation")
 def task_validate_model(model, X_train, X_test, y_train, y_test, label_encoder):
@@ -182,7 +205,7 @@ def notify_success(flow, flow_run, state):
     try:
         report_path = Path("reports/validation_report.html").absolute()
         message = (
-            "✅ Training Pipeline Completed Successfully!\n"
+            "✅ Pipeline Complete: Classification (Skin Cancer) & Regression (Age Prediction) models trained.\n"
             f"📊 Validation Report: {report_path}\n"
             "View the HTML report for detailed validation results."
         )
@@ -206,8 +229,9 @@ def notify_failure(flow, flow_run, state):
 @flow(name="Skin Cancer Training Flow", log_prints=True, on_completion=[notify_success], on_failure=[notify_failure])
 def skin_cancer_training_flow(limit: int = None):
     df = task_load_data()
-    X, y = task_extract_features(df, limit=limit)
+    X, y, y_age = task_extract_features(df, limit=limit)
     model, scaler, encoder, X_train, X_test, y_train, y_test = task_train_model(X, y)
+    age_model, age_rmse = task_train_age_regressor(X, y_age)
     
     # Run validation before saving artifacts
     validation_result = task_validate_model(model, X_train, X_test, y_train, y_test, encoder)
@@ -218,6 +242,12 @@ def skin_cancer_training_flow(limit: int = None):
     # Log experiment with model parameters
     model_params = "n_estimators=200, max_depth=20, random_state=42"
     task_log_experiment("RandomForest", model_params, metrics)
+
+    task_log_experiment(
+        "RandomForestRegressor",
+        "n_estimators=100, random_state=42",
+        {"rmse": age_rmse},
+    )
     
     # Save artifacts only if validation passes
     if validation_result['status'] == 'Passed':
@@ -231,12 +261,12 @@ def skin_cancer_training_flow(limit: int = None):
 if __name__ == "__main__":
     import sys
     # Parse command line arguments
-    limit = 500  # Default sample limit
+    limit = 10015  # Default sample limit
     if len(sys.argv) > 1:
         try:
             limit = int(sys.argv[1])
         except ValueError:
-            print(f"Invalid limit: {sys.argv[1]}. Using default: 500")
+            print(f"Invalid limit: {sys.argv[1]}. Using default: 10015")
     
     print(f"\n{'='*60}")
     print(f"🚀 Starting Skin Cancer Model Training Pipeline")

@@ -139,6 +139,7 @@
         .tag.danger { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
         .tag.success { background: rgba(22, 163, 74, 0.12); color: var(--success); }
         .tag.primary { background: rgba(37, 99, 235, 0.12); color: var(--accent); }
+        .tag.inconclusive { background: rgba(255, 152, 0, 0.12); color: #ff9800; }
 
         .muted { color: var(--muted); font-weight: 500; }
 
@@ -234,6 +235,7 @@
         };
 
         const CANCER_CODES = new Set(["akiec", "bcc", "mel"]);
+        const INCONCLUSIVE_CODE = "inconclusive";
 
         fileInput.addEventListener('change', () => {
             const file = fileInput.files?.[0];
@@ -274,17 +276,21 @@
                 const data = await response.json();
                 const rawCode = (data.class_name ?? "").trim();
                 const code = rawCode.toLowerCase();
+                const isInconclusive = code === INCONCLUSIVE_CODE;
                 const pretty = CLASS_LABELS[code] || rawCode || "Unknown";
                 const isCancer = CANCER_CODES.has(code);
-                const statusLabel = isCancer ? "Cancer" : "Non-cancer";
-                const statusClass = isCancer ? "danger" : "success";
+                const statusLabel = isInconclusive ? "Inconclusive" : isCancer ? "Cancer" : "Non-cancer";
+                const statusClass = isInconclusive ? "inconclusive" : isCancer ? "danger" : "success";
                 const confidence = data.confidence != null ? (data.confidence * 100).toFixed(2) : "N/A";
+                const predictedAge = data.predicted_age != null ? `${data.predicted_age} years` : "N/A";
                 const codeSuffix = rawCode && pretty.toLowerCase() !== rawCode.toLowerCase() ? ` (${rawCode})` : "";
 
                 resultDiv.innerHTML = `
                     <div class="tag ${statusClass}">${statusLabel}</div>
                     <div class="muted" style="margin-top:6px;">Diagnosis: <span class="tag primary">${pretty}${codeSuffix}</span></div>
                     <div class="muted" style="margin-top:6px;">Confidence: ${confidence}%</div>
+                    ${isInconclusive ? '<div class="muted" style="margin-top:6px; color:#ff9800;">⚠️ Low Confidence. Result uncertain.</div>' : ''}
+                    <div class="muted" style="margin-top:6px; color: #111827;">Estimated Patient Age: <b>${predictedAge}</b></div>
                 `;
             } catch (err) {
                 console.error(err);

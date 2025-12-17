@@ -14,9 +14,13 @@ from pydantic import BaseModel, Field, conlist
 
 from . import utils
 
+# Confidence threshold for safety-net behavior
+CONFIDENCE_THRESHOLD = 0.60
+
 
 # Globals populated at startup
 model: Any = None
+age_model: Any = None
 scaler: Any = None
 encoder: Any = None
 metadata: Dict[str, Any] = {}
@@ -24,7 +28,7 @@ metadata: Dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model, scaler, encoder, metadata
+    global model, age_model, scaler, encoder, metadata
     # Initialize logging
     utils.setup_logger()
     logger = logging.getLogger(__name__)
@@ -32,9 +36,12 @@ async def lifespan(app: FastAPI):
     
     artifacts = utils.load_artifacts()
     model = artifacts["model"]
+    age_model = artifacts.get("age_regressor")
     scaler = artifacts["scaler"]
     encoder = artifacts["encoder"]
     metadata = artifacts["metadata"]
+    if age_model is None:
+        logger.warning("Age regressor not loaded; age predictions will be unavailable.")
     logger.info("Model artifacts loaded successfully")
     yield
     logger.info("Shutting down application...")
@@ -55,7 +62,6 @@ def _predict_from_features(features: np.ndarray) -> Dict[str, Any]:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     features_2d = features.reshape(1, -1)
-
     features_scaled = scaler.transform(features_2d)
 
     preds = model.predict(features_scaled)
@@ -66,13 +72,37 @@ def _predict_from_features(features: np.ndarray) -> Dict[str, Any]:
     confidence: Optional[float] = None
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(features_scaled)
-        confidence = float(np.max(proba[0]))
+        confidence = float(np.max(proba[0])) if proba.size else None
+
+    # Safety net: flag low-confidence predictions
+    if confidence is not None and confidence < CONFIDENCE_THRESHOLD:
+        logging.getLogger(__name__).warning("Low confidence prediction: %.2f", confidence)
+        class_id = -1
+        class_code = "Inconclusive"
+        class_name = "Inconclusive"
+
+    predicted_age: Optional[float] = None
+    if age_model is not None:
+        age_logger = logging.getLogger(__name__)
+        try:
+            # Age regressor was trained on raw features; keep inputs unscaled
+            age_pred = age_model.predict(features_2d)
+            predicted_age = float(np.round(age_pred[0], 1))
+        except Exception as exc_raw:
+            age_logger.warning("Age prediction on raw features failed: %s", exc_raw)
+            try:
+                age_pred = age_model.predict(features_scaled)
+                predicted_age = float(np.round(age_pred[0], 1))
+            except Exception as exc_scaled:
+                age_logger.error("Age prediction failed (scaled retry): %s", exc_scaled)
+                predicted_age = None
 
     return {
         "class_id": class_id,
         "class_code": class_code,
         "class_name": class_name,
         "confidence": confidence,
+        "predicted_age": predicted_age,
     }
 
 
