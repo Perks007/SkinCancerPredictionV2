@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field, conlist
 from . import utils
 
 # Confidence threshold for safety-net behavior
-CONFIDENCE_THRESHOLD = 0.60
+# (Project spec: 0.50 / 50%)
+CONFIDENCE_THRESHOLD = 0.50
 
 
 # Globals populated at startup
@@ -109,7 +110,8 @@ def _predict_from_features(features: np.ndarray) -> Dict[str, Any]:
 
 @app.get("/")
 async def root() -> FileResponse:
-    return FileResponse("app/static/index.html")
+    # Avoid stale UI assets in browsers during iteration.
+    return FileResponse("app/static/index.html", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/predict/image")
